@@ -2,7 +2,6 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>网站可用性检测 · 四方法容灾 + 终极回退</title>
 </head>
 <body>
     <!-- 纯内核版本：无UI界面，静默检测，支持四种探测方式 -->
@@ -20,12 +19,12 @@
                 'https://zero-a2lf.onrender.com'
             ];
 
-            const METHOD_TIMEOUT_MS = 1800;      // 每种探测方法的超时时间(ms)
+            const METHOD_TIMEOUT_MS = 300;      // 每种探测方法的超时时间(ms)
             const AUTO_REDIRECT = true;          // 是否自动跳转（false=仅检测）
-            const REDIRECT_DELAY_MS = 800;       // 跳转前延迟(ms)
+            const REDIRECT_DELAY_MS = 0;       // 跳转前延迟(ms)
             
             // ★ 最终备用网址：当所有目标网站均不可达时，直接跳转到此地址
-            const FALLBACK_URL = 'https://www.kfc.com.cn';
+            const FALLBACK_URL = 'https://order.kfc.com.cn/preorder-taro/home';
             // =================================
 
             class RobustAvailabilityChecker {
