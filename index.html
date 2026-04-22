@@ -3,30 +3,40 @@
 <head>
     <meta charset="utf-8">
     <style>
-        /* 可选：简单的调试面板样式（不影响核心功能） */
+        /* 调试面板样式 */
         #debug-panel {
             position: fixed;
             bottom: 10px;
             right: 10px;
-            background: rgba(0,0,0,0.8);
+            background: rgba(0,0,0,0.85);
             color: #0f0;
-            font-family: monospace;
-            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
             padding: 8px 12px;
-            border-radius: 6px;
+            border-radius: 8px;
             z-index: 9999;
-            max-width: 300px;
-            max-height: 200px;
+            max-width: 380px;
+            max-height: 250px;
             overflow: auto;
             display: none;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            border-left: 3px solid #0f0;
         }
         #debug-panel.show {
             display: block;
         }
+        #debug-panel::-webkit-scrollbar {
+            width: 4px;
+        }
+        #debug-panel::-webkit-scrollbar-track {
+            background: #333;
+        }
+        #debug-panel::-webkit-scrollbar-thumb {
+            background: #0f0;
+        }
     </style>
 </head>
 <body>
-    <!-- 纯内核版本：无UI界面，静默检测，支持多种探测方式 -->
     <div id="debug-panel"></div>
     
     <script>
@@ -36,46 +46,38 @@
             // ========== 可配置参数 ==========
             const TARGET_WEBSITES = [
                 'https://qiniu.kfc.brmkweb.cn',
-                //'https://netlify.kfc.brmkweb.cn',
                 'https://digitalocean.kfc.brmkweb.cn',
                 'https://render.kfc.brmkweb.cn',
                 'https://vercel.kfc.brmkweb.cn'
             ];
 
-            const METHOD_TIMEOUT_MS = 1000;      // 每种探测方法的超时时间(ms)，增加到3秒更稳妥
-            const AUTO_REDIRECT = false;          // 是否自动跳转（false=仅检测，true=跳转）
+            const METHOD_TIMEOUT_MS = 1000;      // 每种探测方法的超时时间(ms)
+            const AUTO_REDIRECT = true;          // 是否自动跳转到最快站点
             const REDIRECT_DELAY_MS = 0;        // 跳转前延迟(ms)
             const SHOW_DEBUG_PANEL = false;        // 是否显示调试面板
-            
-            // ★ 最终备用网址：当所有目标网站均不可达时，直接跳转到此地址
-            const FALLBACK_URL = 'https://order.kfc.com.cn/preorder-taro/home';
+            const FALLBACK_URL = 'https://order.kfc.com.cn/preorder-taro/home';  // 备用网址
             // =================================
 
             // 调试日志工具
             const logger = {
-                log: function(...args) {
-                    console.log(...args);
-                    if (SHOW_DEBUG_PANEL) this.addToPanel('log', args);
+                log: function(msg) {
+                    console.log(msg);
+                    if (SHOW_DEBUG_PANEL) this.addToPanel(msg, 'info');
                 },
-                warn: function(...args) {
-                    console.warn(...args);
-                    if (SHOW_DEBUG_PANEL) this.addToPanel('warn', args);
+                error: function(msg) {
+                    console.error(msg);
+                    if (SHOW_DEBUG_PANEL) this.addToPanel(msg, 'error');
                 },
-                error: function(...args) {
-                    console.error(...args);
-                    if (SHOW_DEBUG_PANEL) this.addToPanel('error', args);
-                },
-                addToPanel: function(level, args) {
+                addToPanel: function(msg, type) {
                     const panel = document.getElementById('debug-panel');
                     if (!panel) return;
                     panel.classList.add('show');
                     const time = new Date().toLocaleTimeString();
-                    const msg = args.map(arg => {
-                        if (typeof arg === 'object') return JSON.stringify(arg);
-                        return String(arg);
-                    }).join(' ');
+                    const color = type === 'error' ? '#f66' : '#0f0';
                     const div = document.createElement('div');
-                    div.style.color = level === 'error' ? '#f66' : (level === 'warn' ? '#fa0' : '#0f0');
+                    div.style.color = color;
+                    div.style.borderBottom = '1px solid #333';
+                    div.style.padding = '2px 0';
                     div.innerHTML = `[${time}] ${msg}`;
                     panel.appendChild(div);
                     panel.scrollTop = panel.scrollHeight;
@@ -84,102 +86,48 @@
                 }
             };
 
-            class RobustAvailabilityChecker {
-                constructor(websites, methodTimeout = METHOD_TIMEOUT_MS) {
+            class SpeedDetector {
+                constructor(websites, timeout = 3000) {
                     this.websites = websites;
-                    this.methodTimeout = methodTimeout;
-                    this.availableWebsites = [];
+                    this.timeout = timeout;
+                    this.results = [];
                 }
 
-                // 获取基础域名（协议+主机名）
+                // 获取基础域名
                 getBaseUrl(url) {
                     try {
                         const urlObj = new URL(url);
                         return `${urlObj.protocol}//${urlObj.host}`;
-                    } catch (e) {
+                    } catch {
                         return null;
                     }
                 }
 
-                // 1. Image 探测 (使用 favicon.ico，更通用)
-                testWithImage(url) {
-                    return new Promise((resolve) => {
-                        const img = new Image();
-                        const startTime = performance.now();
-                        let settled = false;
-                        
+                // Prefetch 探测（无需CORS）
+                testWithPrefetch(url) {
+                    return new Promise((resolve, reject) => {
                         const baseUrl = this.getBaseUrl(url);
                         if (!baseUrl) {
-                            resolve({ success: false, time: null, method: 'image', error: 'invalid_url' });
+                            reject(new Error('invalid_url'));
                             return;
                         }
-                        
-                        const timer = setTimeout(() => {
-                            if (!settled) {
-                                settled = true;
-                                cleanup();
-                                resolve({ success: false, time: null, method: 'image', error: 'timeout' });
-                            }
-                        }, this.methodTimeout);
-                        
-                        const cleanup = () => {
-                            img.onload = null;
-                            img.onerror = null;
-                        };
-                        
-                        img.onload = () => {
-                            if (!settled) {
-                                settled = true;
-                                clearTimeout(timer);
-                                cleanup();
-                                resolve({ 
-                                    success: true, 
-                                    time: performance.now() - startTime, 
-                                    method: 'image' 
-                                });
-                            }
-                        };
-                        
-                        img.onerror = () => {
-                            if (!settled) {
-                                settled = true;
-                                clearTimeout(timer);
-                                cleanup();
-                                resolve({ 
-                                    success: false, 
-                                    time: null, 
-                                    method: 'image',
-                                    error: 'load_failed'
-                                });
-                            }
-                        };
-                        
-                        // 使用 favicon.ico 更通用
-                        img.src = `${baseUrl}/favicon.ico?t=${Date.now()}`;
-                    });
-                }
 
-                // 2. Prefetch 探测（无需CORS，适合纯静态环境）
-                testWithPrefetch(url) {
-                    return new Promise((resolve) => {
                         const link = document.createElement('link');
-                        const cacheBuster = url.includes('?') ? '&' : '?';
-                        const testUrl = url + cacheBuster + '_prefetch=' + Date.now();
-                        
+                        const testUrl = `${baseUrl}/?_prefetch=${Date.now()}`;
                         link.rel = 'prefetch';
                         link.href = testUrl;
                         link.as = 'document';
-                        
+
                         let settled = false;
-                        const startTime = performance.now();
+                        const startTime = Date.now();
 
                         const timer = setTimeout(() => {
                             if (!settled) {
                                 settled = true;
                                 cleanup();
-                                resolve({ success: false, time: null, method: 'prefetch', error: 'timeout' });
+                                reject(new Error('timeout'));
                             }
-                        }, this.methodTimeout);
+                        }, this.timeout);
 
                         const cleanup = () => {
                             if (link.parentNode) link.parentNode.removeChild(link);
@@ -190,10 +138,10 @@
                                 settled = true;
                                 clearTimeout(timer);
                                 cleanup();
-                                resolve({ 
-                                    success: true, 
-                                    time: performance.now() - startTime, 
-                                    method: 'prefetch' 
+                                resolve({
+                                    success: true,
+                                    time: Date.now() - startTime,
+                                    method: 'prefetch'
                                 });
                             }
                         };
@@ -203,12 +151,7 @@
                                 settled = true;
                                 clearTimeout(timer);
                                 cleanup();
-                                resolve({ 
-                                    success: false, 
-                                    time: null, 
-                                    method: 'prefetch',
-                                    error: 'load_failed'
-                                });
+                                reject(new Error('load_failed'));
                             }
                         };
 
@@ -216,293 +159,216 @@
                     });
                 }
 
-                // 3. Fetch 探测（最精确，需要CORS支持）
+                // Image 探测（无需CORS）
+                testWithImage(url) {
+                    return new Promise((resolve, reject) => {
+                        const baseUrl = this.getBaseUrl(url);
+                        if (!baseUrl) {
+                            reject(new Error('invalid_url'));
+                            return;
+                        }
+
+                        const img = new Image();
+                        let settled = false;
+                        const startTime = Date.now();
+
+                        const timer = setTimeout(() => {
+                            if (!settled) {
+                                settled = true;
+                                cleanup();
+                                reject(new Error('timeout'));
+                            }
+                        }, this.timeout);
+
+                        const cleanup = () => {
+                            img.onload = null;
+                            img.onerror = null;
+                        };
+
+                        img.onload = () => {
+                            if (!settled) {
+                                settled = true;
+                                clearTimeout(timer);
+                                cleanup();
+                                resolve({
+                                    success: true,
+                                    time: Date.now() - startTime,
+                                    method: 'image'
+                                });
+                            }
+                        };
+
+                        img.onerror = () => {
+                            if (!settled) {
+                                settled = true;
+                                clearTimeout(timer);
+                                cleanup();
+                                reject(new Error('load_failed'));
+                            }
+                        };
+
+                        img.src = `${baseUrl}/favicon.ico?_t=${Date.now()}`;
+                    });
+                }
+
+                // Fetch 探测（需要CORS，但数据最精确）
                 testWithFetch(url) {
-                    return new Promise((resolve) => {
+                    return new Promise((resolve, reject) => {
+                        const baseUrl = this.getBaseUrl(url);
+                        if (!baseUrl) {
+                            reject(new Error('invalid_url'));
+                            return;
+                        }
+
                         const controller = new AbortController();
                         const signal = controller.signal;
-                        const startTime = performance.now();
                         let settled = false;
+                        const startTime = Date.now();
 
                         const timer = setTimeout(() => {
                             if (!settled) {
                                 settled = true;
                                 controller.abort();
-                                resolve({ 
-                                    success: false, 
-                                    time: null, 
-                                    method: 'fetch',
-                                    error: 'timeout'
-                                });
+                                reject(new Error('timeout'));
                             }
-                        }, this.methodTimeout);
+                        }, this.timeout);
 
-                        // 请求 favicon.ico 或根路径，避免404污染日志
-                        const baseUrl = this.getBaseUrl(url);
-                        if (!baseUrl) {
-                            clearTimeout(timer);
-                            resolve({ success: false, time: null, method: 'fetch', error: 'invalid_url' });
-                            return;
-                        }
-                        
                         const testUrl = `${baseUrl}/favicon.ico?_cb=${Date.now()}`;
-                        
+
                         fetch(testUrl, {
                             method: 'HEAD',
                             cache: 'no-store',
                             signal: signal
-                        }).then((response) => {
+                        }).then(() => {
                             if (!settled) {
                                 settled = true;
                                 clearTimeout(timer);
-                                // 只要收到响应（任何状态码）就算站点可达
                                 resolve({
                                     success: true,
-                                    time: performance.now() - startTime,
-                                    method: 'fetch',
-                                    status: response.status,
-                                    ok: response.ok
+                                    time: Date.now() - startTime,
+                                    method: 'fetch'
                                 });
                             }
-                        }).catch((err) => {
+                        }).catch(() => {
                             if (!settled) {
                                 settled = true;
                                 clearTimeout(timer);
-                                resolve({ 
-                                    success: false, 
-                                    time: null, 
-                                    method: 'fetch',
-                                    error: err.message || 'network_error'
-                                });
+                                reject(new Error('cors_or_network_error'));
                             }
                         });
                     });
                 }
 
-                // 4. 备用的 Script 探测（某些特殊环境）
-                testWithScript(url) {
-                    return new Promise((resolve) => {
-                        const script = document.createElement('script');
-                        let settled = false;
-                        const startTime = performance.now();
-
-                        const timer = setTimeout(() => {
-                            if (!settled) {
-                                settled = true;
-                                cleanup();
-                                resolve({ success: false, time: null, method: 'script', error: 'timeout' });
-                            }
-                        }, this.methodTimeout);
-
-                        const cleanup = () => {
-                            script.onload = script.onerror = null;
-                            if (script.parentNode) script.parentNode.removeChild(script);
-                        };
-
-                        script.onload = () => {
-                            if (!settled) {
-                                settled = true;
-                                clearTimeout(timer);
-                                cleanup();
-                                resolve({ 
-                                    success: true, 
-                                    time: performance.now() - startTime, 
-                                    method: 'script' 
-                                });
-                            }
-                        };
-
-                        script.onerror = () => {
-                            if (!settled) {
-                                settled = true;
-                                clearTimeout(timer);
-                                cleanup();
-                                resolve({ 
-                                    success: false, 
-                                    time: null, 
-                                    method: 'script',
-                                    error: 'load_failed'
-                                });
-                            }
-                        };
-
-                        const baseUrl = this.getBaseUrl(url);
-                        if (baseUrl) {
-                            script.src = `${baseUrl}/__probe_${Date.now()}.js`;
-                            document.head.appendChild(script);
-                        } else {
-                            clearTimeout(timer);
-                            resolve({ success: false, time: null, method: 'script', error: 'invalid_url' });
-                        }
-                    });
-                }
-
-                /**
-                 * 对单个站点执行多方法顺序探测（一旦成功立即返回）
-                 * 探测顺序: fetch → prefetch → image → script
-                 * fetch 最精确优先，prefetch 备选，image/script 兜底
-                 */
+                // 并行探测单个站点（谁快用谁）
                 async probeSingleSite(url) {
-                    const methods = [
-                        { name: 'fetch', fn: () => this.testWithFetch(url) },
-                        { name: 'prefetch', fn: () => this.testWithPrefetch(url) },
-                        { name: 'image', fn: () => this.testWithImage(url) },
-                        { name: 'script', fn: () => this.testWithScript(url) }
+                    const promises = [
+                        this.testWithPrefetch(url).then(r => ({ ...r, method: 'prefetch' })),
+                        this.testWithImage(url).then(r => ({ ...r, method: 'image' })),
+                        this.testWithFetch(url).then(r => ({ ...r, method: 'fetch' }))
                     ];
 
-                    for (const method of methods) {
-                        const result = await method.fn();
-                        if (result.success) {
-                            logger.log(`[✓] ${url} 可达 (${Math.round(result.time)}ms) [${method.name}]`);
-                            return { success: true, time: result.time, method: method.name, status: result.status };
-                        }
-                        logger.log(`[↻] ${url} ${method.name} 失败，切换下一方法`);
+                    try {
+                        // Promise.any: 只要有一个成功就立即返回
+                        const result = await Promise.any(promises);
+                        const timeMs = Math.round(result.time);
+                        logger.log(`✅ ${url} - ${timeMs}ms [${result.method}]`);
+                        return { success: true, url, time: result.time, method: result.method };
+                    } catch (error) {
+                        logger.error(`❌ ${url} - 不可达 (所有探测方法均失败)`);
+                        return { success: false, url };
                     }
-                    logger.warn(`[✗] ${url} 不可达 (所有探测方法均失败)`);
-                    return { success: false, time: null, method: 'none' };
                 }
 
-                async checkAll() {
-                    logger.log(`[探测启动] 目标站点数: ${this.websites.length}, 每方法超时: ${this.methodTimeout}ms`);
-                    const startGlobal = performance.now();
+                // 探测所有站点
+                async detectAll() {
+                    logger.log(`🚀 开始探测 ${this.websites.length} 个站点...`);
+                    const startTime = Date.now();
 
-                    // 并发探测所有站点（每个站点内部顺序执行多种方法）
+                    // 并行探测所有站点
                     const probeTasks = this.websites.map(url => this.probeSingleSite(url));
                     const results = await Promise.all(probeTasks);
 
-                    const successList = [];
-                    for (let idx = 0; idx < this.websites.length; idx++) {
-                        const res = results[idx];
-                        if (res.success) {
-                            successList.push({
-                                url: this.websites[idx],
-                                time: res.time,
-                                method: res.method,
-                                status: res.status
-                            });
-                        }
-                    }
+                    // 筛选成功的并按时间排序
+                    this.results = results
+                        .filter(r => r.success)
+                        .sort((a, b) => a.time - b.time);
 
-                    this.availableWebsites = successList.sort((a, b) => a.time - b.time);
+                    const elapsed = Math.round(Date.now() - startTime);
+                    logger.log(`📊 探测完成，总耗时 ${elapsed}ms，可用 ${this.results.length}/${this.websites.length} 个`);
 
-                    const elapsed = Math.round(performance.now() - startGlobal);
-                    logger.log(`[检测完成] 总耗时 ${elapsed}ms | 总计:${this.websites.length} 可用:${this.availableWebsites.length}`);
-
-                    if (this.availableWebsites.length === 0) {
-                        logger.warn('[警告] 所有站点均不可达，将触发最终回退跳转');
-                    } else {
-                        logger.log('[可用站点列表] (按响应速度排序):');
-                        this.availableWebsites.forEach((item, idx) => {
-                            logger.log(`  ${idx+1}. ${item.url} (${Math.round(item.time)}ms) [${item.method}]`);
+                    if (this.results.length > 0) {
+                        const fastestTime = Math.round(this.results[0].time);
+                        logger.log(`🏆 最快站点: ${this.results[0].url} (${fastestTime}ms) [${this.results[0].method}]`);
+                        this.results.forEach((r, i) => {
+                            logger.log(`   ${i + 1}. ${r.url} - ${Math.round(r.time)}ms [${r.method}]`);
                         });
-                        const best = this.availableWebsites[0];
-                        logger.log(`[最佳站点] ${best.url} (${Math.round(best.time)}ms) 通过 ${best.method} 方法验证`);
+                    } else {
+                        logger.error(`⚠️ 所有站点均不可达`);
                     }
-                    return this.availableWebsites;
+
+                    return this.results;
                 }
 
-                getBestWebsiteUrl() {
-                    return this.availableWebsites.length ? this.availableWebsites[0].url : null;
+                // 获取最快站点URL
+                getFastestUrl() {
+                    return this.results.length > 0 ? this.results[0].url : null;
                 }
 
-                getBestWebsiteInfo() {
-                    return this.availableWebsites.length ? this.availableWebsites[0] : null;
+                // 获取最快站点详细信息
+                getFastestInfo() {
+                    return this.results.length > 0 ? this.results[0] : null;
                 }
 
-                redirectToBest() {
-                    const bestInfo = this.getBestWebsiteInfo();
-                    if (!bestInfo) return false;
-                    
-                    const bestUrl = bestInfo.url;
-                    const currentOrigin = window.location.origin;
-                    const targetOrigin = bestUrl.replace(/\/$/, '');
-                    
-                    if (currentOrigin === targetOrigin) {
-                        logger.log('[跳过] 当前已是最佳站点');
+                // 跳转到最快站点
+                redirectToFastest() {
+                    const fastestInfo = this.getFastestInfo();
+                    if (!fastestInfo) {
+                        logger.log(`⚠️ 无可用站点，跳转到备用地址: ${FALLBACK_URL}`);
+                        setTimeout(() => window.location.href = FALLBACK_URL, REDIRECT_DELAY_MS);
                         return false;
                     }
-                    
-                    // 保留当前路径、查询参数和哈希
-                    const fullPath = bestUrl + window.location.pathname + window.location.search + window.location.hash;
-                    logger.log(`[自动跳转] 重定向至: ${fullPath} (响应时间: ${Math.round(bestInfo.time)}ms)`);
+
+                    const currentOrigin = window.location.origin;
+                    const targetOrigin = fastestInfo.url.replace(/\/$/, '');
+
+                    if (currentOrigin === targetOrigin) {
+                        logger.log('✅ 当前已是最快站点');
+                        return false;
+                    }
+
+                    const fullPath = fastestInfo.url + window.location.pathname + window.location.search + window.location.hash;
+                    logger.log(`🔀 跳转到最快站点: ${fullPath} (响应时间: ${Math.round(fastestInfo.time)}ms)`);
                     setTimeout(() => window.location.href = fullPath, REDIRECT_DELAY_MS);
                     return true;
                 }
-
-                redirectToFallback() {
-                    if (!FALLBACK_URL) return false;
-                    if (window.location.href.startsWith(FALLBACK_URL)) {
-                        logger.log('[最终回退] 当前已在备用网址');
-                        return false;
-                    }
-                    logger.log(`[最终回退] 所有站点不可达，跳转至: ${FALLBACK_URL}`);
-                    setTimeout(() => window.location.href = FALLBACK_URL, REDIRECT_DELAY_MS);
-                    return true;
-                }
             }
 
-            // 执行入口
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', runRobustDetection);
-            } else {
-                runRobustDetection();
-            }
-
-            async function runRobustDetection() {
-                const checker = new RobustAvailabilityChecker(TARGET_WEBSITES, METHOD_TIMEOUT_MS);
-                await checker.checkAll();
+            // ========== 执行入口 ==========
+            (async function() {
+                const detector = new SpeedDetector(TARGET_WEBSITES, METHOD_TIMEOUT_MS);
+                await detector.detectAll();
 
                 // 暴露结果到全局，方便调试
-                window.__availabilityReport = {
-                    best: checker.getBestWebsiteUrl(),
-                    bestInfo: checker.getBestWebsiteInfo(),
-                    availableList: checker.availableWebsites,
+                window.__speedReport = {
+                    fastest: detector.getFastestUrl(),
+                    fastestInfo: detector.getFastestInfo(),
+                    allResults: detector.results,
                     timestamp: Date.now(),
                     fallbackUrl: FALLBACK_URL
                 };
 
+                // 自动跳转（如果开启）
                 if (AUTO_REDIRECT) {
-                    const best = checker.getBestWebsiteUrl();
-                    if (best) {
-                        const currentOrigin = window.location.origin;
-                        const targetOrigin = best.replace(/\/$/, '');
-                        if (currentOrigin !== targetOrigin) {
-                            checker.redirectToBest();
-                        } else {
-                            logger.log('[自动重定向] 当前已是最优站点');
-                        }
-                    } else {
-                        logger.log('[自动重定向] 无可用站点，触发最终回退');
-                        checker.redirectToFallback();
-                    }
+                    detector.redirectToFastest();
                 } else {
-                    const bestInfo = checker.getBestWebsiteInfo();
-                    if (bestInfo) {
-                        logger.log(`[手动模式] 最佳站点: ${bestInfo.url} (${Math.round(bestInfo.time)}ms)`);
+                    const fastest = detector.getFastestUrl();
+                    if (fastest) {
+                        logger.log(`💡 手动模式，最快站点: ${fastest}`);
                     } else {
-                        logger.log(`[手动模式] 无可用站点，可手动访问: ${FALLBACK_URL}`);
+                        logger.log(`💡 手动模式，无可用站点，可访问: ${FALLBACK_URL}`);
                     }
                 }
-            }
-
-            // 暴露简易 API 供外部调用
-            window.RobustProbe = {
-                check: (websites, timeoutMs) => {
-                    const c = new RobustAvailabilityChecker(websites, timeoutMs);
-                    return c.checkAll().then(() => ({
-                        best: c.getBestWebsiteUrl(),
-                        bestInfo: c.getBestWebsiteInfo(),
-                        allAvailable: c.availableWebsites
-                    }));
-                },
-                // 获取当前配置
-                config: {
-                    targetWebsites: TARGET_WEBSITES,
-                    methodTimeout: METHOD_TIMEOUT_MS,
-                    autoRedirect: AUTO_REDIRECT,
-                    fallbackUrl: FALLBACK_URL
-                }
-            };
+            })();
         })();
     </script>
 </body>
