@@ -241,7 +241,7 @@
 
                     console.log(`🔀 跳转到最快站点: ${fastestUrl}`);
                     this.isRedirected = true;
-                    window.location.href = fastestUrl + window.location.pathname + window.location.search + window.location.hash;
+                    window.location.href = fastestUrl;
                     return true;
                 }
             }
