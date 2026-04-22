@@ -2,98 +2,30 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <style>
-        /* 调试面板样式 */
-        #debug-panel {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0,0,0,0.85);
-            color: #0f0;
-            font-family: 'Courier New', monospace;
-            font-size: 11px;
-            padding: 8px 12px;
-            border-radius: 8px;
-            z-index: 9999;
-            max-width: 380px;
-            max-height: 250px;
-            overflow: auto;
-            display: none;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-            border-left: 3px solid #0f0;
-        }
-        #debug-panel.show {
-            display: block;
-        }
-        #debug-panel::-webkit-scrollbar {
-            width: 4px;
-        }
-        #debug-panel::-webkit-scrollbar-track {
-            background: #333;
-        }
-        #debug-panel::-webkit-scrollbar-thumb {
-            background: #0f0;
-        }
-    </style>
 </head>
 <body>
-    <div id="debug-panel"></div>
-    
     <script>
         (function() {
             "use strict";
 
-            // ========== 可配置参数 ==========
             const TARGET_WEBSITES = [
                 'https://qiniu.kfc.brmkweb.cn',
+                'https://vercel.kfc.brmkweb.cn',
                 'https://digitalocean.kfc.brmkweb.cn',
-                'https://render.kfc.brmkweb.cn',
-                'https://vercel.kfc.brmkweb.cn'
+                'https://render.kfc.brmkweb.cn'
             ];
 
-            const METHOD_TIMEOUT_MS = 1000;      // 每种探测方法的超时时间(ms)
-            const AUTO_REDIRECT = false;          // 是否自动跳转到最快站点
-            const REDIRECT_DELAY_MS = 0;        // 跳转前延迟(ms)
-            const SHOW_DEBUG_PANEL = false;        // 是否显示调试面板
-            const FALLBACK_URL = 'https://order.kfc.com.cn/preorder-taro/home';  // 备用网址
-            // =================================
-
-            // 调试日志工具
-            const logger = {
-                log: function(msg) {
-                    console.log(msg);
-                    if (SHOW_DEBUG_PANEL) this.addToPanel(msg, 'info');
-                },
-                error: function(msg) {
-                    console.error(msg);
-                    if (SHOW_DEBUG_PANEL) this.addToPanel(msg, 'error');
-                },
-                addToPanel: function(msg, type) {
-                    const panel = document.getElementById('debug-panel');
-                    if (!panel) return;
-                    panel.classList.add('show');
-                    const time = new Date().toLocaleTimeString();
-                    const color = type === 'error' ? '#f66' : '#0f0';
-                    const div = document.createElement('div');
-                    div.style.color = color;
-                    div.style.borderBottom = '1px solid #333';
-                    div.style.padding = '2px 0';
-                    div.innerHTML = `[${time}] ${msg}`;
-                    panel.appendChild(div);
-                    panel.scrollTop = panel.scrollHeight;
-                    // 保留最近50条
-                    while (panel.children.length > 50) panel.removeChild(panel.firstChild);
-                }
-            };
+            const METHOD_TIMEOUT_MS = 800;
+            const AUTO_REDIRECT = true;
+            const FALLBACK_URL = 'https://order.kfc.com.cn/preorder-taro/home';
 
             class SpeedDetector {
-                constructor(websites, timeout = 3000) {
+                constructor(websites, timeout = 800) {
                     this.websites = websites;
                     this.timeout = timeout;
                     this.results = [];
                 }
 
-                // 获取基础域名
                 getBaseUrl(url) {
                     try {
                         const urlObj = new URL(url);
@@ -103,7 +35,6 @@
                     }
                 }
 
-                // Prefetch 探测（无需CORS）
                 testWithPrefetch(url) {
                     return new Promise((resolve, reject) => {
                         const baseUrl = this.getBaseUrl(url);
@@ -159,59 +90,6 @@
                     });
                 }
 
-                // Image 探测（无需CORS）
-                testWithImage(url) {
-                    return new Promise((resolve, reject) => {
-                        const baseUrl = this.getBaseUrl(url);
-                        if (!baseUrl) {
-                            reject(new Error('invalid_url'));
-                            return;
-                        }
-
-                        const img = new Image();
-                        let settled = false;
-                        const startTime = Date.now();
-
-                        const timer = setTimeout(() => {
-                            if (!settled) {
-                                settled = true;
-                                cleanup();
-                                reject(new Error('timeout'));
-                            }
-                        }, this.timeout);
-
-                        const cleanup = () => {
-                            img.onload = null;
-                            img.onerror = null;
-                        };
-
-                        img.onload = () => {
-                            if (!settled) {
-                                settled = true;
-                                clearTimeout(timer);
-                                cleanup();
-                                resolve({
-                                    success: true,
-                                    time: Date.now() - startTime,
-                                    method: 'image'
-                                });
-                            }
-                        };
-
-                        img.onerror = () => {
-                            if (!settled) {
-                                settled = true;
-                                clearTimeout(timer);
-                                cleanup();
-                                reject(new Error('load_failed'));
-                            }
-                        };
-
-                        img.src = `${baseUrl}/favicon.ico?_t=${Date.now()}`;
-                    });
-                }
-
-                // Fetch 探测（需要CORS，但数据最精确）
                 testWithFetch(url) {
                     return new Promise((resolve, reject) => {
                         const baseUrl = this.getBaseUrl(url);
@@ -238,8 +116,7 @@
                         fetch(testUrl, {
                             method: 'HEAD',
                             cache: 'no-store',
-							importance: 'high',
-							priority: 'high',
+                            importance: 'high',
                             signal: signal
                         }).then(() => {
                             if (!settled) {
@@ -261,116 +138,80 @@
                     });
                 }
 
-// 在 probeSingleSite 中，可以调整 Promise 的权重
-async probeSingleSite(url) {
-    // 给 fetch 更短的超时，让它更快失败或成功
-    const fetchPromise = this.testWithFetch(url).then(r => ({ ...r, method: 'fetch' }));
-    const prefetchPromise = this.testWithPrefetch(url).then(r => ({ ...r, method: 'prefetch' }));
-    const imagePromise = this.testWithImage(url).then(r => ({ ...r, method: 'image' }));
-    
-    // Promise.any 会自动选最快的成功者
-    const promises = [fetchPromise, prefetchPromise, imagePromise];
-    
-    try {
-        const result = await Promise.any(promises);
-        logger.log(`✅ ${url} - ${Math.round(result.time)}ms [${result.method}]`);
-        return { success: true, url, time: result.time, method: result.method };
-    } catch (error) {
-        logger.error(`❌ ${url} - 不可达`);
-        return { success: false, url };
-    }
-}
+                async probeSingleSite(url) {
+                    const promises = [
+                        this.testWithFetch(url).then(r => ({ ...r, method: 'fetch' })),
+                        this.testWithPrefetch(url).then(r => ({ ...r, method: 'prefetch' }))
+                    ];
 
-                // 探测所有站点
+                    try {
+                        const result = await Promise.any(promises);
+                        console.log(`✅ ${url} - ${Math.round(result.time)}ms [${result.method}]`);
+                        return { success: true, url, time: result.time, method: result.method };
+                    } catch (error) {
+                        console.log(`❌ ${url} - 不可达`);
+                        return { success: false, url };
+                    }
+                }
+
                 async detectAll() {
-                    logger.log(`🚀 开始探测 ${this.websites.length} 个站点...`);
+                    console.log(`🚀 开始探测 ${this.websites.length} 个站点...`);
                     const startTime = Date.now();
 
-                    // 并行探测所有站点
                     const probeTasks = this.websites.map(url => this.probeSingleSite(url));
                     const results = await Promise.all(probeTasks);
 
-                    // 筛选成功的并按时间排序
                     this.results = results
                         .filter(r => r.success)
                         .sort((a, b) => a.time - b.time);
 
                     const elapsed = Math.round(Date.now() - startTime);
-                    logger.log(`📊 探测完成，总耗时 ${elapsed}ms，可用 ${this.results.length}/${this.websites.length} 个`);
+                    console.log(`📊 探测完成，总耗时 ${elapsed}ms，可用 ${this.results.length}/${this.websites.length} 个`);
 
                     if (this.results.length > 0) {
-                        const fastestTime = Math.round(this.results[0].time);
-                        logger.log(`🏆 最快站点: ${this.results[0].url} (${fastestTime}ms) [${this.results[0].method}]`);
+                        console.log(`🏆 最快站点: ${this.results[0].url} (${Math.round(this.results[0].time)}ms)`);
                         this.results.forEach((r, i) => {
-                            logger.log(`   ${i + 1}. ${r.url} - ${Math.round(r.time)}ms [${r.method}]`);
+                            console.log(`   ${i + 1}. ${r.url} - ${Math.round(r.time)}ms [${r.method}]`);
                         });
                     } else {
-                        logger.error(`⚠️ 所有站点均不可达`);
+                        console.log(`⚠️ 所有站点均不可达`);
                     }
 
                     return this.results;
                 }
 
-                // 获取最快站点URL
                 getFastestUrl() {
                     return this.results.length > 0 ? this.results[0].url : null;
                 }
 
-                // 获取最快站点详细信息
-                getFastestInfo() {
-                    return this.results.length > 0 ? this.results[0] : null;
-                }
-
-                // 跳转到最快站点
                 redirectToFastest() {
-                    const fastestInfo = this.getFastestInfo();
-                    if (!fastestInfo) {
-                        logger.log(`⚠️ 无可用站点，跳转到备用地址: ${FALLBACK_URL}`);
-                        setTimeout(() => window.location.href = FALLBACK_URL, REDIRECT_DELAY_MS);
+                    const fastestUrl = this.getFastestUrl();
+                    if (!fastestUrl) {
+                        console.log(`⚠️ 无可用站点，跳转到备用地址: ${FALLBACK_URL}`);
+                        window.location.href = FALLBACK_URL;
                         return false;
                     }
 
                     const currentOrigin = window.location.origin;
-                    const targetOrigin = fastestInfo.url.replace(/\/$/, '');
+                    const targetOrigin = fastestUrl.replace(/\/$/, '');
 
                     if (currentOrigin === targetOrigin) {
-                        logger.log('✅ 当前已是最快站点');
+                        console.log('✅ 当前已是最快站点');
                         return false;
                     }
 
-                    const fullPath = fastestInfo.url + window.location.pathname + window.location.search + window.location.hash;
-                    logger.log(`🔀 跳转到最快站点: ${fullPath} (响应时间: ${Math.round(fastestInfo.time)}ms)`);
-                    setTimeout(() => window.location.href = fullPath, REDIRECT_DELAY_MS);
+                    console.log(`🔀 跳转到最快站点: ${fastestUrl}`);
+                    window.location.href = fastestUrl + window.location.pathname + window.location.search + window.location.hash;
                     return true;
                 }
             }
 
-            // ========== 执行入口 ==========
-            (async function() {
-                const detector = new SpeedDetector(TARGET_WEBSITES, METHOD_TIMEOUT_MS);
-                await detector.detectAll();
-
-                // 暴露结果到全局，方便调试
-                window.__speedReport = {
-                    fastest: detector.getFastestUrl(),
-                    fastestInfo: detector.getFastestInfo(),
-                    allResults: detector.results,
-                    timestamp: Date.now(),
-                    fallbackUrl: FALLBACK_URL
-                };
-
-                // 自动跳转（如果开启）
+            const detector = new SpeedDetector(TARGET_WEBSITES, METHOD_TIMEOUT_MS);
+            detector.detectAll().then(() => {
                 if (AUTO_REDIRECT) {
                     detector.redirectToFastest();
-                } else {
-                    const fastest = detector.getFastestUrl();
-                    if (fastest) {
-                        logger.log(`💡 手动模式，最快站点: ${fastest}`);
-                    } else {
-                        logger.log(`💡 手动模式，无可用站点，可访问: ${FALLBACK_URL}`);
-                    }
                 }
-            })();
+            });
         })();
     </script>
 </body>
