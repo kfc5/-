@@ -8,6 +8,7 @@
         (function() {
             "use strict";
 
+            // ========== 可配置参数 ==========
             const TARGET_WEBSITES = [
                 'https://qiniu.kfc.brmkweb.cn',
                 'https://vercel.kfc.brmkweb.cn',
@@ -16,15 +17,18 @@
                 'https://render.kfc.brmkweb.cn'
             ];
 
-            const METHOD_TIMEOUT_MS = 800;
-            const AUTO_REDIRECT = true;
+            const METHOD_TIMEOUT_MS = 800;      // 单次探测超时时间
+            const AUTO_REDIRECT = true;          // 是否自动跳转
+            const FAST_THRESHOLD = 300;           // 满意阈值(ms)：低于此值立即跳转
             const FALLBACK_URL = 'https://order.kfc.com.cn/preorder-taro/home';
+            // =================================
 
             class SpeedDetector {
                 constructor(websites, timeout = 800) {
                     this.websites = websites;
                     this.timeout = timeout;
                     this.results = [];
+                    this.isRedirected = false;    // 防止多次跳转
                 }
 
                 getBaseUrl(url) {
@@ -155,16 +159,47 @@
                     }
                 }
 
-                async detectAll() {
-                    console.log(`🚀 开始探测 ${this.websites.length} 个站点...`);
+                async detectAll(fastThreshold = FAST_THRESHOLD) {
+                    console.log(`🚀 开始探测 ${this.websites.length} 个站点，满意阈值: ${fastThreshold}ms`);
                     const startTime = Date.now();
 
-                    const probeTasks = this.websites.map(url => this.probeSingleSite(url));
-                    const results = await Promise.all(probeTasks);
+                    // 创建探测任务
+                    const probePromises = this.websites.map(url => this.probeSingleSite(url));
 
-                    this.results = results
-                        .filter(r => r.success)
-                        .sort((a, b) => a.time - b.time);
+                    // 用于提前终止的 Promise
+                    let resolveFast;
+                    const fastPromise = new Promise(resolve => {
+                        resolveFast = resolve;
+                    });
+
+                    // 监听每个探测结果，如果满足阈值则提前返回
+                    const wrappedPromises = probePromises.map(async (probePromise) => {
+                        const result = await probePromise;
+                        if (result.success && result.time <= fastThreshold && !this.isRedirected) {
+                            // 满足阈值，立即返回这个结果
+                            resolveFast([result]);
+                        }
+                        return result;
+                    });
+
+                    let finalResults;
+                    try {
+                        // 竞速：要么等到满意的结果，要么等所有结果完成
+                        finalResults = await Promise.race([
+                            fastPromise,
+                            Promise.all(wrappedPromises)
+                        ]);
+                    } catch (e) {
+                        finalResults = null;
+                    }
+
+                    // 处理最终结果
+                    if (finalResults && finalResults.length > 0) {
+                        this.results = finalResults.sort((a, b) => a.time - b.time);
+                    } else {
+                        const allResults = await Promise.all(wrappedPromises);
+                        this.results = allResults.filter(r => r.success).sort((a, b) => a.time - b.time);
+                    }
 
                     const elapsed = Math.round(Date.now() - startTime);
                     console.log(`📊 探测完成，总耗时 ${elapsed}ms，可用 ${this.results.length}/${this.websites.length} 个`);
@@ -186,9 +221,12 @@
                 }
 
                 redirectToFastest() {
+                    if (this.isRedirected) return false;
+                    
                     const fastestUrl = this.getFastestUrl();
                     if (!fastestUrl) {
                         console.log(`⚠️ 无可用站点，跳转到备用地址: ${FALLBACK_URL}`);
+                        this.isRedirected = true;
                         window.location.href = FALLBACK_URL;
                         return false;
                     }
@@ -202,17 +240,31 @@
                     }
 
                     console.log(`🔀 跳转到最快站点: ${fastestUrl}`);
+                    this.isRedirected = true;
                     window.location.href = fastestUrl + window.location.pathname + window.location.search + window.location.hash;
                     return true;
                 }
             }
 
+            // 执行探测
             const detector = new SpeedDetector(TARGET_WEBSITES, METHOD_TIMEOUT_MS);
-            detector.detectAll().then(() => {
-                if (AUTO_REDIRECT) {
+            
+            if (AUTO_REDIRECT) {
+                // 启用快速跳转：一旦有站点低于阈值就跳转，不等其他
+                detector.detectAll(FAST_THRESHOLD).then(() => {
                     detector.redirectToFastest();
-                }
-            });
+                });
+            } else {
+                // 手动模式：等待所有完成，输出完整报告
+                detector.detectAll().then(() => {
+                    const fastest = detector.getFastestUrl();
+                    if (fastest) {
+                        console.log(`💡 手动模式，最快站点: ${fastest}`);
+                    } else {
+                        console.log(`💡 手动模式，无可用站点，可访问: ${FALLBACK_URL}`);
+                    }
+                });
+            }
         })();
     </script>
 </body>
