@@ -17,7 +17,7 @@ jobs:
           accessKeyId: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
           accessKeySecret: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
           bucket: ${{ secrets.ALIYUN_BUCKET }}
-          endpoint: ${{ secrets.ALIYUN_ENDPOINT }}
+          endpoint: oss-cn-hongkong.aliyuncs.com
           folder: ./docs
           # 可选：设置为网站模式（自动配置 index.html 和 404.html）
           indexPage: index.html
